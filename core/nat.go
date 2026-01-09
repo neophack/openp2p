@@ -1,5 +1,12 @@
 package openp2p
 
+/*
+#cgo LDFLAGS: -lws2_32
+#include <stdlib.h>
+#include "nat_c.h"
+*/
+import "C"
+
 import (
 	"encoding/json"
 	"fmt"
@@ -8,47 +15,40 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	reuse "github.com/openp2p-cn/go-reuseport"
+	"unsafe"
 )
 
 func natDetectTCP(serverHost string, serverPort int, lp int) (publicIP string, publicPort int, localPort int, err error) {
-	gLog.dev("natDetectTCP start")
-	defer gLog.dev("natDetectTCP end")
-	conn, err := reuse.DialTimeout("tcp4", fmt.Sprintf("0.0.0.0:%d", lp), fmt.Sprintf("%s:%d", serverHost, serverPort), NatDetectTimeout)
-	if err != nil {
-		err = fmt.Errorf("dial tcp4 %s:%d error: %w", serverHost, serverPort, err)
-		return
-	}
-	defer conn.Close()
+	gLog.dev("natDetectTCP start (CGO)")
+	defer gLog.dev("natDetectTCP end (CGO)")
 
-	localAddr := conn.LocalAddr().(*net.TCPAddr)
-	localPort = localAddr.Port
+	cHost := C.CString(serverHost)
+	defer C.free(unsafe.Pointer(cHost))
 
-	if _, err = conn.Write([]byte("1")); err != nil {
-		err = fmt.Errorf("write error: %w", err)
-		return
-	}
+	bufSize := 1024
+	cBuf := C.malloc(C.size_t(bufSize))
+	defer C.free(cBuf)
 
-	b := make([]byte, 1000)
-	conn.SetReadDeadline(time.Now().Add(NatDetectTimeout))
-	n, err := conn.Read(b)
-	if err != nil {
-		err = fmt.Errorf("read error: %w", err)
-		return
+	var bytesRead C.int
+
+	ret := C.nat_detect_tcp_c(cHost, C.int(serverPort), C.int(lp), cBuf, C.int(bufSize), &bytesRead)
+	if ret != 0 {
+		return "", 0, 0, fmt.Errorf("nat_detect_tcp_c failed with code %d", ret)
 	}
 
-	response := strings.Split(string(b[:n]), ":")
+	nRead := int(bytesRead)
+	buffer := C.GoBytes(cBuf, bytesRead)
+	localPort = lp // C.nat_detect_tcp_c used lp
+
+	response := strings.Split(string(buffer[:nRead]), ":")
 	if len(response) < 2 {
-		err = fmt.Errorf("invalid response format: %s", string(b[:n]))
-		return
+		return "", 0, 0, fmt.Errorf("invalid response format: %s", string(buffer[:nRead]))
 	}
 
 	publicIP = response[0]
 	port, err := strconv.Atoi(response[1])
 	if err != nil {
-		err = fmt.Errorf("invalid port format: %w", err)
-		return
+		return "", 0, 0, fmt.Errorf("invalid port format: %w", err)
 	}
 	publicPort = port
 
@@ -56,39 +56,45 @@ func natDetectTCP(serverHost string, serverPort int, lp int) (publicIP string, p
 }
 
 func natDetectUDP(serverHost string, serverPort int, localPort int) (publicIP string, publicPort int, err error) {
-	gLog.dev("natDetectUDP start")
-	defer gLog.dev("natDetectUDP end")
-	conn, err := net.ListenPacket("udp", fmt.Sprintf(":%d", localPort))
-	if err != nil {
-		gLog.e("natDetectUDP listen udp error:%s", err)
-		return "", 0, err
-	}
-	defer conn.Close()
+	gLog.dev("natDetectUDP start (CGO)")
+	defer gLog.dev("natDetectUDP end (CGO)")
 
-	dst, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", serverHost, serverPort))
-	if err != nil {
-		return "", 0, err
-	}
+	cHost := C.CString(serverHost)
+	defer C.free(unsafe.Pointer(cHost))
 
-	// The connection can write data to the desired address.
+	// Construct message
 	msg, err := newMessage(MsgNATDetect, MsgNAT, nil)
-	_, err = conn.WriteTo(msg, dst)
 	if err != nil {
 		return "", 0, err
 	}
-	deadline := time.Now().Add(NatDetectTimeout)
-	err = conn.SetReadDeadline(deadline)
-	if err != nil {
-		return "", 0, err
+
+	// Prepare C buffers
+	bufSize := 2048
+	cBuf := C.malloc(C.size_t(bufSize))
+	defer C.free(cBuf)
+
+	var bytesRead C.int
+
+	// Call C function
+	ret := C.nat_detect_udp_c(cHost, C.int(serverPort), C.int(localPort),
+		unsafe.Pointer(&msg[0]), C.int(len(msg)),
+		cBuf, C.int(bufSize), &bytesRead)
+
+	if ret != 0 {
+		gLog.e("C.nat_detect_udp_c error code: %d", ret)
+		return "", 0, fmt.Errorf("nat_detect_udp_c failed with code %d", ret)
 	}
-	buffer := make([]byte, 1024)
-	nRead, _, err := conn.ReadFrom(buffer)
-	if err != nil {
-		gLog.e("NAT detect error:%s", err)
-		return "", 0, err
-	}
+
+	// Parse response
+	nRead := int(bytesRead)
+	buffer := C.GoBytes(cBuf, bytesRead)
+
 	natRsp := NatDetectRsp{}
-	json.Unmarshal(buffer[openP2PHeaderSize:nRead], &natRsp)
+	err = json.Unmarshal(buffer[openP2PHeaderSize:nRead], &natRsp)
+	if err != nil {
+		gLog.e("NAT detect unmarshal error:%s", err)
+		return "", 0, err
+	}
 
 	return natRsp.IP, natRsp.Port, nil
 }

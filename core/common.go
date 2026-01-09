@@ -1,12 +1,15 @@
 package openp2p
 
+/*
+#include <stdlib.h>
+#include "common_c.h"
+*/
+import "C"
+
 import (
 	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/tls"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unsafe"
 )
 
 const MinNodeNameLen = 8
@@ -50,40 +54,16 @@ func getmac(ip string) string {
 
 var cbcIVBlock = []byte("UHNJUSBACIJFYSQN")
 
-var paddingArray = [][]byte{
-	{0},
-	{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
-	{2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2},
-	{3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3},
-	{4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4},
-	{5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5},
-	{6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6},
-	{7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7},
-	{8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8},
-	{9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9},
-	{10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10},
-	{11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11},
-	{12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12},
-	{13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13},
-	{14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14},
-	{15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15},
-	{16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16},
-}
-
 func pkcs7Padding(plainData []byte, dataLen, blockSize int) int {
-	padLen := blockSize - dataLen%blockSize
-	pPadding := plainData[dataLen : dataLen+padLen]
-
-	copy(pPadding, paddingArray[padLen][:padLen])
-	return padLen
+	return int(C.pkcs7_padding_c((*C.uint8_t)(unsafe.Pointer(&plainData[0])), C.int(dataLen), C.int(blockSize)))
 }
 
 func pkcs7UnPadding(origData []byte, dataLen int) ([]byte, error) {
-	unPadLen := int(origData[dataLen-1])
-	if unPadLen <= 0 || unPadLen > 16 {
-		return nil, fmt.Errorf("wrong pkcs7 padding head size:%d", unPadLen)
+	padLen := int(C.pkcs7_unpadding_c((*C.uint8_t)(unsafe.Pointer(&origData[0])), C.int(dataLen)))
+	if padLen < 0 {
+		return nil, fmt.Errorf("wrong pkcs7 padding size")
 	}
-	return origData[:(dataLen - unPadLen)], nil
+	return origData[:(dataLen - padLen)], nil
 }
 
 // AES-CBC
@@ -91,17 +71,8 @@ func encryptBytes(key []byte, out, in []byte, plainLen int) ([]byte, error) {
 	if len(key) == 0 {
 		return in[:plainLen], nil
 	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	//iv := out[:aes.BlockSize]
-	//if _, err := io.ReadFull(rand.Reader, iv); err != nil {
-	//	return nil, err
-	//}
-	mode := cipher.NewCBCEncrypter(block, cbcIVBlock)
-	total := pkcs7Padding(in, plainLen, aes.BlockSize) + plainLen
-	mode.CryptBlocks(out[:total], in[:total])
+	total := pkcs7Padding(in, plainLen, 16) + plainLen
+	C.aes_cbc_encrypt_c((*C.uint8_t)(unsafe.Pointer(&key[0])), (*C.uint8_t)(unsafe.Pointer(&cbcIVBlock[0])), (*C.uint8_t)(unsafe.Pointer(&out[0])), (*C.uint8_t)(unsafe.Pointer(&in[0])), C.int(total))
 	return out[:total], nil
 }
 
@@ -109,13 +80,9 @@ func decryptBytes(key []byte, out, in []byte, dataLen int) ([]byte, error) {
 	if len(key) == 0 {
 		return in[:dataLen], nil
 	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	mode := cipher.NewCBCDecrypter(block, cbcIVBlock)
-	mode.CryptBlocks(out[:dataLen], in[:dataLen])
-	return pkcs7UnPadding(out, dataLen)
+	var outLen C.int
+	C.aes_cbc_decrypt_c((*C.uint8_t)(unsafe.Pointer(&key[0])), (*C.uint8_t)(unsafe.Pointer(&cbcIVBlock[0])), (*C.uint8_t)(unsafe.Pointer(&out[0])), (*C.uint8_t)(unsafe.Pointer(&in[0])), C.int(dataLen), &outLen)
+	return out[:int(outLen)], nil
 }
 
 // {240e:3b7:622:3440:59ad:7fa1:170c:ef7f 47924975352157270363627191692449083263 China CN 0xc0000965c8 Guangdong GD 0  Guangzhou 23.1167 113.25 Asia/Shanghai AS4134 Chinanet }
@@ -173,25 +140,11 @@ const GREATER int = 1
 const LESS int = -1
 
 func compareVersion(v1, v2 string) int {
-	if v1 == v2 {
-		return EQUAL
-	}
-	v1Arr := strings.Split(v1, ".")
-	v2Arr := strings.Split(v2, ".")
-	for i, subVer := range v1Arr {
-		if len(v2Arr) <= i {
-			return GREATER
-		}
-		subv1, _ := strconv.Atoi(subVer)
-		subv2, _ := strconv.Atoi(v2Arr[i])
-		if subv1 > subv2 {
-			return GREATER
-		}
-		if subv1 < subv2 {
-			return LESS
-		}
-	}
-	return LESS
+	cv1 := C.CString(v1)
+	defer C.free(unsafe.Pointer(cv1))
+	cv2 := C.CString(v2)
+	defer C.free(unsafe.Pointer(cv2))
+	return int(C.compare_version_c(cv1, cv2))
 }
 
 func parseMajorVer(ver string) int {
@@ -265,24 +218,7 @@ func inetAtoN(ipstr string) (uint32, error) { // support both ipnet or single ip
 }
 
 func calculateChecksum(data []byte) uint16 {
-	length := len(data)
-	sum := uint32(0)
-
-	// Calculate the sum of 16-bit words
-	for i := 0; i < length-1; i += 2 {
-		sum += uint32(binary.BigEndian.Uint16(data[i : i+2]))
-	}
-
-	// Add the last byte (if odd length)
-	if length%2 != 0 {
-		sum += uint32(data[length-1])
-	}
-
-	// Fold 32-bit sum to 16 bits
-	sum = (sum >> 16) + (sum & 0xffff)
-	sum += (sum >> 16)
-
-	return uint16(^sum)
+	return uint16(C.calculate_checksum_c((*C.uint8_t)(unsafe.Pointer(&data[0])), C.int(len(data))))
 }
 
 func min(nums ...int32) int32 {

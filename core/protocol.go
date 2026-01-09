@@ -1,13 +1,18 @@
 package openp2p
 
+/*
+#include <stdlib.h>
+#include "protocol_c.h"
+#include "common_c.h"
+*/
+import "C"
+
 import (
-	"bytes"
-	"encoding/binary"
 	"encoding/json"
-	"hash/crc64"
 	"math/big"
 	"net"
 	"time"
+	"unsafe"
 )
 
 const OpenP2PVersion = "3.24.33"
@@ -34,14 +39,14 @@ type openP2PHeader struct {
 	SubType  uint16
 }
 
-var openP2PHeaderSize = binary.Size(openP2PHeader{})
+const openP2PHeaderSize = 8 // binary.Size(openP2PHeader{}) is 8
 
 type PushHeader struct {
 	From uint64
 	To   uint64
 }
 
-var PushHeaderSize = binary.Size(PushHeader{})
+const PushHeaderSize = 16 // binary.Size(PushHeader{})
 
 const RelayHeaderSize = 8
 
@@ -55,30 +60,26 @@ type NodeDataMPAck struct {
 	Delay      uint32 // delay write mergeack ms
 }
 
-var overlayHeaderSize = binary.Size(overlayHeader{})
+const overlayHeaderSize = 8 // binary.Size(overlayHeader{})
 
 func decodeHeader(data []byte) (*openP2PHeader, error) {
-	head := openP2PHeader{}
-	rd := bytes.NewReader(data)
-	err := binary.Read(rd, binary.LittleEndian, &head)
-	if err != nil {
-		return nil, err
+	if len(data) < openP2PHeaderSize {
+		return nil, nil // or error
+	}
+	var cHead C.openp2p_header_t
+	C.decode_header_c((*C.uint8_t)(unsafe.Pointer(&data[0])), &cHead)
+	head := openP2PHeader{
+		DataLen:  uint32(cHead.data_len),
+		MainType: uint16(cHead.main_type),
+		SubType:  uint16(cHead.sub_type),
 	}
 	return &head, nil
 }
 
-func encodeHeader(mainType uint16, subType uint16, len uint32) []byte {
-	head := openP2PHeader{
-		len,
-		mainType,
-		subType,
-	}
-	headBuf := new(bytes.Buffer)
-	err := binary.Write(headBuf, binary.LittleEndian, head)
-	if err != nil {
-		return []byte("")
-	}
-	return headBuf.Bytes()
+func encodeHeader(mainType uint16, subType uint16, length uint32) []byte {
+	buf := make([]byte, openP2PHeaderSize)
+	C.encode_header_c(C.uint16_t(mainType), C.uint16_t(subType), C.uint32_t(length), (*C.uint8_t)(unsafe.Pointer(&buf[0])))
+	return buf
 }
 
 // Message main type
@@ -238,38 +239,19 @@ func newMessage(mainType uint16, subType uint16, packet interface{}) ([]byte, er
 	if err != nil {
 		return nil, err
 	}
-	// gLog.Println(LevelINFO,"write packet:", string(data))
-	head := openP2PHeader{
-		uint32(len(data)),
-		mainType,
-		subType,
-	}
-	headBuf := new(bytes.Buffer)
-	err = binary.Write(headBuf, binary.LittleEndian, head)
-	if err != nil {
-		return nil, err
-	}
-	writeBytes := append(headBuf.Bytes(), data...)
-	return writeBytes, nil
+	head := encodeHeader(mainType, subType, uint32(len(data)))
+	return append(head, data...), nil
 }
 
 func newMessageWithBuff(mainType uint16, subType uint16, data []byte) ([]byte, error) {
-	head := openP2PHeader{
-		uint32(len(data)),
-		mainType,
-		subType,
-	}
-	headBuf := new(bytes.Buffer)
-	err := binary.Write(headBuf, binary.LittleEndian, head)
-	if err != nil {
-		return nil, err
-	}
-	writeBytes := append(headBuf.Bytes(), data...)
-	return writeBytes, nil
+	head := encodeHeader(mainType, subType, uint32(len(data)))
+	return append(head, data...), nil
 }
 
 func NodeNameToID(name string) uint64 {
-	return crc64.Checksum([]byte(name), crc64.MakeTable(crc64.ISO))
+	cName := C.CString(name)
+	defer C.free(unsafe.Pointer(cName))
+	return uint64(C.crc64_iso_c((*C.uint8_t)(unsafe.Pointer(cName)), C.size_t(len(name))))
 }
 
 type PushConnectReq struct {
