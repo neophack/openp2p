@@ -144,6 +144,28 @@ int64_t moving_average_c(int64_t pre_val, int64_t current_val, double factor) {
     return (int64_t)(pre_val * (1.0 - factor) + current_val * factor);
 }
 
+int is_ipv6_c(const char* ipstr) {
+    if (!ipstr) return 0;
+    return (strchr(ipstr, ':') != NULL && strchr(ipstr, '.') == NULL) ? 1 : 0;
+}
+
+int is_localhost_c(const char* ipstr) {
+    if (!ipstr) return 0;
+    if (strcmp(ipstr, "localhost") == 0 || strcmp(ipstr, "127.0.0.1") == 0 || strcmp(ipstr, "::1") == 0) {
+        return 1;
+    }
+    return 0;
+}
+
+int parse_major_ver_c(const char* ver) {
+    if (!ver) return 0;
+    int major = 0;
+    if (sscanf(ver, "%d", &major) == 1) {
+        return major;
+    }
+    return 0;
+}
+
 uint64_t crc64_iso_c(const uint8_t* data, size_t len) {
     if (!data || len == 0) return 0;
 

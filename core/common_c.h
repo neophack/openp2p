@@ -25,6 +25,9 @@ void app_config_log_peer_node_c(char* out, const char* relay_mode, const char* p
 uint32_t inet_aton_c(const char* ipstr);
 int32_t calc_rtt_c(int32_t pre_rtt, int32_t current_rtt);
 int64_t moving_average_c(int64_t pre_val, int64_t current_val, double factor);
+int is_ipv6_c(const char* ipstr);
+int is_localhost_c(const char* ipstr);
+int parse_major_ver_c(const char* ver);
 #ifdef __cplusplus
 }
 #endif

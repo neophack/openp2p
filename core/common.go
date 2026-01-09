@@ -19,7 +19,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 	"unsafe"
@@ -146,20 +145,21 @@ func compareVersion(v1, v2 string) int {
 }
 
 func parseMajorVer(ver string) int {
-	v1Arr := strings.Split(ver, ".")
-	if len(v1Arr) > 0 {
-		n, _ := strconv.ParseInt(v1Arr[0], 10, 32)
-		return int(n)
-	}
-	return 0
+	cVer := C.CString(ver)
+	defer C.free(unsafe.Pointer(cVer))
+	return int(C.parse_major_ver_c(cVer))
 }
 
 func IsIPv6(ipStr string) bool {
-	ip := net.ParseIP(ipStr)
-	if ip == nil {
-		return false
-	}
-	return ip.To16() != nil && ip.To4() == nil
+	cStr := C.CString(ipStr)
+	defer C.free(unsafe.Pointer(cStr))
+	return C.is_ipv6_c(cStr) != 0
+}
+
+func IsLocalhost(ipStr string) bool {
+	cStr := C.CString(ipStr)
+	defer C.free(unsafe.Pointer(cStr))
+	return C.is_localhost_c(cStr) != 0
 }
 
 var letters = []byte("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890-")

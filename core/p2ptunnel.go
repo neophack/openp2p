@@ -277,7 +277,7 @@ func (t *P2PTunnel) connectUnderlayUDP() (c underlay, err error) {
 	var ul underlay
 	underlayProtocol := t.config.UnderlayProtocol
 	if underlayProtocol == "" {
-		underlayProtocol = "quic"
+		underlayProtocol = "kcp"
 	}
 	if t.config.isUnderlayServer == 1 {
 		// TODO: move to a func

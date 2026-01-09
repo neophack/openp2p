@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // --- Original Go Implementations (Pre-CGO) ---
@@ -226,9 +227,34 @@ func goParseNatRsp(buf []byte) (string, int, error) {
 	return natRsp.IP, natRsp.Port, nil
 }
 
+func goIsIPv6(ipStr string) bool {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+	return ip.To16() != nil && ip.To4() == nil
+}
+
+func goIsLocalhost(ipStr string) bool {
+	if ipStr == "localhost" || ipStr == "127.0.0.1" || ipStr == "::1" {
+		return true
+	}
+	return false
+}
+
+func goParseMajorVer(ver string) int {
+	v1Arr := strings.Split(ver, ".")
+	if len(v1Arr) > 0 {
+		n, _ := strconv.ParseInt(v1Arr[0], 10, 32)
+		return int(n)
+	}
+	return 0
+}
+
 // --- Tests ---
 
 func TestCGOCompatibility(t *testing.T) {
+	InitForUnitTest(LvDEBUG)
 	t.Run("NodeNameToID", func(t *testing.T) {
 		names := []string{"test-node", "node-12345678", "very-long-node-name-for-testing", ""}
 		for _, name := range names {
@@ -541,6 +567,88 @@ func TestCGOCompatibility(t *testing.T) {
 			if goRes != cRes {
 				t.Errorf("InetAtoN(%s) mismatch: go=%d, c=%d", ip, goRes, cRes)
 			}
+		}
+	})
+
+	t.Run("IsIPv6", func(t *testing.T) {
+		ips := []string{"1.2.3.4", "240e:3b3:3000:1::1", "::1", "invalid"}
+		for _, ip := range ips {
+			if goIsIPv6(ip) != IsIPv6(ip) {
+				t.Errorf("IsIPv6(%s) mismatch", ip)
+			}
+		}
+	})
+
+	t.Run("IsLocalhost", func(t *testing.T) {
+		hosts := []string{"localhost", "127.0.0.1", "::1", "1.2.3.4", "google.com"}
+		for _, host := range hosts {
+			if goIsLocalhost(host) != IsLocalhost(host) {
+				t.Errorf("IsLocalhost(%s) mismatch", host)
+			}
+		}
+	})
+
+	t.Run("ParseMajorVer", func(t *testing.T) {
+		vers := []string{"1.2.3", "v2.0.1", "10", "invalid"}
+		for _, v := range vers {
+			if goParseMajorVer(v) != parseMajorVer(v) {
+				t.Errorf("parseMajorVer(%s) mismatch: go=%d, cgo=%d", v, goParseMajorVer(v), parseMajorVer(v))
+			}
+		}
+	})
+
+	t.Run("KCP", func(t *testing.T) {
+		// Create server
+		server, err := listenKCP("127.0.0.1:0", time.Second*10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer server.Close()
+		serverAddr := server.conn.LocalAddr().(*net.UDPAddr)
+
+		// Create client
+		clientConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+		if err != nil {
+			t.Fatal(err)
+		}
+		client, err := dialKCP(clientConn, serverAddr, time.Second*10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+
+		// Send data from client to server
+		testData := []byte("hello kcp")
+		_, err = client.Write(testData)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Read data on server
+		buf := make([]byte, 1024)
+		server.SetReadDeadline(time.Now().Add(time.Second * 5))
+		n, err := server.Read(buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(buf[:n]) != string(testData) {
+			t.Errorf("expected %s, got %s", string(testData), string(buf[:n]))
+		}
+
+		// Send data from server to client
+		_, err = server.Write([]byte("hello client"))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Read data on client
+		client.SetReadDeadline(time.Now().Add(time.Second * 5))
+		n, err = client.Read(buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(buf[:n]) != "hello client" {
+			t.Errorf("expected hello client, got %s", string(buf[:n]))
 		}
 	})
 }
