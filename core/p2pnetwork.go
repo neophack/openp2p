@@ -1,7 +1,6 @@
 package openp2p
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -807,10 +806,9 @@ func (pn *P2PNetwork) init() error {
 }
 
 func (pn *P2PNetwork) handleMessage(msg []byte) {
-	head := openP2PHeader{}
-	err := binary.Read(bytes.NewReader(msg[:openP2PHeaderSize]), binary.LittleEndian, &head)
-	if err != nil {
-		gLog.e("handleMessage error:%s", err)
+	head, err := decodeHeader(msg)
+	if err != nil || head == nil {
+		gLog.e("handleMessage error: decoding failed")
 		return
 	}
 	gLog.dev("handleMessage %+v", head)
@@ -855,7 +853,7 @@ func (pn *P2PNetwork) handleMessage(msg []byte) {
 			if pn.ddtma == 0 {
 				pn.ddtma = pn.ddt
 			} else {
-				pn.ddtma = int64(float64(pn.ddtma)*(1-ma10) + float64(pn.ddt)*ma10) // avoid int64 overflow
+				pn.ddtma = movingAverage(pn.ddtma, pn.ddt, ma10)
 				newdt = pn.dt + pn.ddtma
 			}
 		}
@@ -969,20 +967,13 @@ func (pn *P2PNetwork) push(to string, subType uint16, packet interface{}) error 
 	if !pn.online {
 		return errors.New("client offline")
 	}
-	pushHead := PushHeader{}
-	pushHead.From = gConf.nodeID()
-	pushHead.To = NodeNameToID(to)
-	pushHeadBuf := new(bytes.Buffer)
-	err := binary.Write(pushHeadBuf, binary.LittleEndian, pushHead)
-	if err != nil {
-		return err
-	}
+	pushHeadBuf := encodePushHeader(gConf.nodeID(), NodeNameToID(to))
 	data, err := json.Marshal(packet)
 	if err != nil {
 		return err
 	}
 	// gLog.Println(LevelINFO,"write packet:", string(data))
-	pushMsg := append(encodeHeader(MsgPush, subType, uint32(len(data)+PushHeaderSize)), pushHeadBuf.Bytes()...)
+	pushMsg := append(encodeHeader(MsgPush, subType, uint32(len(data)+PushHeaderSize)), pushHeadBuf...)
 	pushMsg = append(pushMsg, data...)
 	pn.writeMtx.Lock()
 	defer pn.writeMtx.Unlock()
@@ -1026,10 +1017,10 @@ func (pn *P2PNetwork) read(node string, mainType uint16, subType uint16, timeout
 			gLog.e("read msg error %d:%d timeout", mainType, subType)
 			return
 		case msg := <-ch:
-			head = &openP2PHeader{}
-			err := binary.Read(bytes.NewReader(msg.data[:openP2PHeaderSize]), binary.LittleEndian, head)
-			if err != nil {
-				gLog.e("read msg error:%s", err)
+			var err error
+			head, err = decodeHeader(msg.data)
+			if err != nil || head == nil {
+				gLog.e("read msg error: decoding failed")
 				break
 			}
 			if time.Since(msg.ts) > ReadMsgTimeout {

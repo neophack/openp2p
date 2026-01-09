@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include <math.h>
+#include <time.h>
 
 int pkcs7_padding_c(uint8_t* data, int data_len, int block_size) {
     int pad_len = block_size - (data_len % block_size);
@@ -61,6 +63,85 @@ int compare_version_c(const char* v1, const char* v2) {
         if (n1 < n2) return -1;
     }
     return 0;
+}
+
+double calc_retry_time_relay_c(double x) {
+    return 10 + exp(0.8 * (x - 3.6));
+}
+
+double calc_retry_time_direct_c(double x) {
+    return 10 + exp(2.8 * (x - 4));
+}
+
+void rand_str_c(char* out, int n) {
+    const char* letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890-";
+    int len = strlen(letters);
+    for (int i = 0; i < n; i++) {
+        out[i] = letters[rand() % len];
+    }
+    out[n] = '\0';
+}
+
+void sanitize_file_name_c(char* out, const char* in) {
+    const char* invalid_chars = "\\/:*?\"<>|";
+    int len = strlen(in);
+    for (int i = 0; i < len; i++) {
+        if (strchr(invalid_chars, in[i])) {
+            out[i] = ' ';
+        } else {
+            out[i] = in[i];
+        }
+    }
+    out[len] = '\0';
+}
+
+int32_t min_c(const int32_t* nums, int count) {
+    if (count <= 0) return 0;
+    int32_t min_val = nums[0];
+    for (int i = 1; i < count; i++) {
+        if (nums[i] < min_val) {
+            min_val = nums[i];
+        }
+    }
+    return min_val;
+}
+
+uint64_t app_config_id_c(int src_port, const char* protocol, const char* peer_node) {
+    if (src_port == 0) {
+        return crc64_iso_c((const uint8_t*)peer_node, strlen(peer_node));
+    }
+    if (strcmp(protocol, "tcp") == 0) {
+        return (uint64_t)src_port * 10;
+    }
+    return (uint64_t)src_port * 10 + 1;
+}
+
+void app_config_log_peer_node_c(char* out, const char* relay_mode, const char* peer_node) {
+    if (strcmp(relay_mode, "public") == 0) {
+        sprintf(out, "%llu", (unsigned long long)crc64_iso_c((const uint8_t*)peer_node, strlen(peer_node)));
+    } else {
+        strcpy(out, peer_node);
+    }
+}
+
+uint32_t inet_aton_c(const char* ipstr) {
+    // simple implementation for IPv4
+    int a, b, c, d;
+    if (sscanf(ipstr, "%d.%d.%d.%d", &a, &b, &c, &d) == 4) {
+        return (uint32_t)((a << 24) | (b << 16) | (c << 8) | d);
+    }
+    return 0;
+}
+
+int32_t calc_rtt_c(int32_t pre_rtt, int32_t current_rtt) {
+    if (pre_rtt == 1000) { // DefaultRtt
+        return current_rtt;
+    }
+    return (int32_t)(pre_rtt * (1.0 - 1.0 / 20.0) + current_rtt * (1.0 / 20.0));
+}
+
+int64_t moving_average_c(int64_t pre_val, int64_t current_val, double factor) {
+    return (int64_t)(pre_val * (1.0 - factor) + current_val * factor);
 }
 
 uint64_t crc64_iso_c(const uint8_t* data, size_t len) {

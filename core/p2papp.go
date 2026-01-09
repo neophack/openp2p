@@ -456,9 +456,7 @@ func (app *p2pApp) UpdateHeartbeat(rtid uint64) {
 	app.hbTime[tidx] = time.Now()
 	rtt := int32(time.Since(app.whbTime[tidx]) / time.Millisecond)
 	preRtt := app.rtt[tidx].Load()
-	if preRtt != DefaultRtt {
-		rtt = int32(float64(preRtt)*(1-ma20) + float64(rtt)*ma20)
-	}
+	rtt = calcRTT(preRtt, rtt)
 	app.rtt[tidx].Store(rtt)
 	gLog.dev("appid:%d relay heartbeat %d store rtt %d", app.id, tidx, rtt)
 }

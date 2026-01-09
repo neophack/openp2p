@@ -20,3 +20,21 @@ void decode_header_c(const uint8_t* in, openp2p_header_t* head) {
     head->main_type = (uint16_t)in[4] | ((uint16_t)in[5] << 8);
     head->sub_type = (uint16_t)in[6] | ((uint16_t)in[7] << 8);
 }
+
+void encode_push_header_c(uint64_t from, uint64_t to, uint8_t* out) {
+    memcpy(out, &from, 8);
+    memcpy(out + 8, &to, 8);
+}
+
+void decode_push_header_c(const uint8_t* in, push_header_t* head) {
+    memcpy(&head->from, in, 8);
+    memcpy(&head->to, in + 8, 8);
+}
+
+void encode_overlay_header_c(uint64_t id, uint8_t* out) {
+    memcpy(out, &id, 8);
+}
+
+void decode_overlay_header_c(const uint8_t* in, overlay_header_t* head) {
+    memcpy(&head->id, in, 8);
+}

@@ -13,8 +13,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
-	"math/big"
 	"math/rand"
 	"net"
 	"net/http"
@@ -167,11 +165,9 @@ func IsIPv6(ipStr string) bool {
 var letters = []byte("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890-")
 
 func randStr(n int) string {
-	b := make([]byte, n)
-	for i := range b {
-		b[i] = letters[rand.Intn(len(letters))]
-	}
-	return string(b)
+	buf := make([]byte, n+1)
+	C.rand_str_c((*C.char)(unsafe.Pointer(&buf[0])), C.int(n))
+	return string(buf[:n])
 }
 
 func execCommand(commandPath string, wait bool, arg ...string) (err error) {
@@ -187,12 +183,11 @@ func execCommand(commandPath string, wait bool, arg ...string) (err error) {
 }
 
 func sanitizeFileName(fileName string) string {
-	validFileName := fileName
-	invalidChars := []string{"\\", "/", ":", "*", "?", "\"", "<", ">", "|"}
-	for _, char := range invalidChars {
-		validFileName = strings.ReplaceAll(validFileName, char, " ")
-	}
-	return validFileName
+	cIn := C.CString(fileName)
+	defer C.free(unsafe.Pointer(cIn))
+	buf := make([]byte, len(fileName)+1)
+	C.sanitize_file_name_c((*C.char)(unsafe.Pointer(&buf[0])), cIn)
+	return string(buf[:len(fileName)])
 }
 
 func prettyJson(s interface{}) string {
@@ -205,16 +200,17 @@ func prettyJson(s interface{}) string {
 }
 
 func inetAtoN(ipstr string) (uint32, error) { // support both ipnet or single ip
-	i, _, err := net.ParseCIDR(ipstr)
-	if err != nil {
-		i = net.ParseIP(ipstr)
-		if i == nil {
+	// Handle CIDR if present
+	if strings.Contains(ipstr, "/") {
+		i, _, err := net.ParseCIDR(ipstr)
+		if err != nil {
 			return 0, err
 		}
+		ipstr = i.String()
 	}
-	ret := big.NewInt(0)
-	ret.SetBytes(i.To4())
-	return uint32(ret.Int64()), nil
+	cStr := C.CString(ipstr)
+	defer C.free(unsafe.Pointer(cStr))
+	return uint32(C.inet_aton_c(cStr)), nil
 }
 
 func calculateChecksum(data []byte) uint16 {
@@ -223,23 +219,24 @@ func calculateChecksum(data []byte) uint16 {
 
 func min(nums ...int32) int32 {
 	if len(nums) == 0 {
-		return 0 // 如果没有输入，返回最大值
+		return 0
 	}
-
-	minVal := nums[0]
-	for _, num := range nums[1:] {
-		if num < minVal {
-			minVal = num
-		}
-	}
-	return minVal
+	return int32(C.min_c((*C.int32_t)(unsafe.Pointer(&nums[0])), C.int(len(nums))))
 }
 
 func calcRetryTimeRelay(x float64) float64 {
-	return 10 + math.Exp(0.8*(x-3.6))
+	return float64(C.calc_retry_time_relay_c(C.double(x)))
 }
 func calcRetryTimeDirect(x float64) float64 {
-	return 10 + math.Exp(2.8*(x-4))
+	return float64(C.calc_retry_time_direct_c(C.double(x)))
+}
+
+func calcRTT(preRtt, currentRtt int32) int32 {
+	return int32(C.calc_rtt_c(C.int32_t(preRtt), C.int32_t(currentRtt)))
+}
+
+func movingAverage(preVal, currentVal int64, factor float64) int64 {
+	return int64(C.moving_average_c(C.int64_t(preVal), C.int64_t(currentVal), C.double(factor)))
 }
 
 func isAndroid() bool {

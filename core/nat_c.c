@@ -1,4 +1,5 @@
 #include "nat_c.h"
+#include "protocol_c.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -242,5 +243,73 @@ int nat_detect_tcp_c(const char* server_host, int server_port, int local_port,
     #ifdef _WIN32
     WSACleanup();
     #endif
+    return 0;
+}
+
+// Helper to parse simple JSON {"ip":"...","port":...}
+int parse_nat_rsp_c(const char* buf, int len, char* ip, int* port) {
+    const char* ip_ptr = strstr(buf, "\"ip\":\"");
+    if (!ip_ptr) {
+        ip_ptr = strstr(buf, "\"IP\":\"");
+    }
+    if (!ip_ptr) return -1;
+    ip_ptr += 6;
+    const char* ip_end = strchr(ip_ptr, '\"');
+    if (!ip_end) return -1;
+    int ip_len = ip_end - ip_ptr;
+    strncpy(ip, ip_ptr, ip_len);
+    ip[ip_len] = '\0';
+
+    const char* port_ptr = strstr(buf, "\"port\":");
+    if (!port_ptr) return -1;
+    port_ptr += 7;
+    *port = atoi(port_ptr);
+    return 0;
+}
+
+int get_nat_type_c(const char* server_host, int detect_port1, int detect_port2, int local_port,
+                   char* public_ip_out, int* nat_type_out) {
+    uint8_t msg[OPENP2P_HEADER_SIZE + 2]; // +2 for empty json {}
+    encode_header_c(MSG_NAT_DETECT, MSG_NAT, 2, msg);
+    msg[OPENP2P_HEADER_SIZE] = '{';
+    msg[OPENP2P_HEADER_SIZE+1] = '}';
+
+    char buf[2048];
+    int bytes_read;
+    char ip1[64];
+    int port1, port2;
+
+    // First detection
+    if (nat_detect_udp_c(server_host, detect_port1, local_port, msg, sizeof(msg), buf, sizeof(buf), &bytes_read) != 0) {
+        // Try TCP if UDP fails
+        if (nat_detect_tcp_c(server_host, detect_port1, local_port, buf, sizeof(buf), &bytes_read) != 0) {
+            return -1;
+        }
+        // TCP response is just ip:port string
+        if (sscanf(buf, "%63[^:]:%d", ip1, &port1) != 2) return -2;
+    } else {
+        if (parse_nat_rsp_c(buf + OPENP2P_HEADER_SIZE, bytes_read - OPENP2P_HEADER_SIZE, ip1, &port1) != 0) return -3;
+    }
+
+    strcpy(public_ip_out, ip1);
+
+    // Second detection
+    if (nat_detect_udp_c(server_host, detect_port2, local_port, msg, sizeof(msg), buf, sizeof(buf), &bytes_read) != 0) {
+        if (nat_detect_tcp_c(server_host, detect_port2, local_port, buf, sizeof(buf), &bytes_read) != 0) {
+            return -4;
+        }
+        char ip2[64];
+        if (sscanf(buf, "%63[^:]:%d", ip2, &port2) != 2) return -5;
+    } else {
+        char ip2[64];
+        if (parse_nat_rsp_c(buf + OPENP2P_HEADER_SIZE, bytes_read - OPENP2P_HEADER_SIZE, ip2, &port2) != 0) return -6;
+    }
+
+    if (port1 == port2) {
+        *nat_type_out = NAT_CONE;
+    } else {
+        *nat_type_out = NAT_SYMMETRIC;
+    }
+
     return 0;
 }

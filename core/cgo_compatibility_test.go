@@ -5,8 +5,12 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"hash/crc64"
+	"math"
+	"math/big"
+	"net"
 	"strconv"
 	"strings"
 	"testing"
@@ -145,6 +149,83 @@ func goCalculateChecksum(data []byte) uint16 {
 	return uint16(^sum)
 }
 
+func goCalcRetryTimeRelay(x float64) float64 {
+	return 10 + math.Exp(0.8*(x-3.6))
+}
+func goCalcRetryTimeDirect(x float64) float64 {
+	return 10 + math.Exp(2.8*(x-4))
+}
+
+func goMin(nums ...int32) int32 {
+	if len(nums) == 0 {
+		return 0
+	}
+	minVal := nums[0]
+	for _, num := range nums[1:] {
+		if num < minVal {
+			minVal = num
+		}
+	}
+	return minVal
+}
+
+func goSanitizeFileName(fileName string) string {
+	validFileName := fileName
+	invalidChars := []string{"\\", "/", ":", "*", "?", "\"", "<", ">", "|"}
+	for _, char := range invalidChars {
+		validFileName = strings.ReplaceAll(validFileName, char, " ")
+	}
+	return validFileName
+}
+
+func goEncodePushHeader(from uint64, to uint64) []byte {
+	buf := new(bytes.Buffer)
+	binary.Write(buf, binary.LittleEndian, from)
+	binary.Write(buf, binary.LittleEndian, to)
+	return buf.Bytes()
+}
+
+func goDecodePushHeader(data []byte) (*PushHeader, error) {
+	if len(data) < PushHeaderSize {
+		return nil, fmt.Errorf("data too short")
+	}
+	head := PushHeader{}
+	rd := bytes.NewReader(data)
+	err := binary.Read(rd, binary.LittleEndian, &head)
+	if err != nil {
+		return nil, err
+	}
+	return &head, nil
+}
+
+func goEncodeOverlayHeader(id uint64) []byte {
+	buf := new(bytes.Buffer)
+	binary.Write(buf, binary.LittleEndian, id)
+	return buf.Bytes()
+}
+
+func goDecodeOverlayHeader(data []byte) (*overlayHeader, error) {
+	if len(data) < overlayHeaderSize {
+		return nil, fmt.Errorf("data too short")
+	}
+	head := overlayHeader{}
+	rd := bytes.NewReader(data)
+	err := binary.Read(rd, binary.LittleEndian, &head.id)
+	if err != nil {
+		return nil, err
+	}
+	return &head, nil
+}
+
+func goParseNatRsp(buf []byte) (string, int, error) {
+	natRsp := NatDetectRsp{}
+	err := json.Unmarshal(buf, &natRsp)
+	if err != nil {
+		return "", 0, err
+	}
+	return natRsp.IP, natRsp.Port, nil
+}
+
 // --- Tests ---
 
 func TestCGOCompatibility(t *testing.T) {
@@ -181,6 +262,75 @@ func TestCGOCompatibility(t *testing.T) {
 			cgoHead, _ := decodeHeader(cgoBuf)
 			if goHead.MainType != cgoHead.MainType || goHead.SubType != cgoHead.SubType || goHead.DataLen != cgoHead.DataLen {
 				t.Errorf("decodeHeader mismatch for %v:\ngo=%+v\ncgo=%+v", tt, goHead, cgoHead)
+			}
+		}
+	})
+
+	t.Run("PushHeader", func(t *testing.T) {
+		tests := []struct {
+			from uint64
+			to   uint64
+		}{
+			{1, 2},
+			{0xFFFFFFFFFFFFFFFF, 0xEEEEEEEEEEEEEEEE},
+			{0, 0},
+			{1234567890, 9876543210},
+		}
+		for _, tt := range tests {
+			goBuf := goEncodePushHeader(tt.from, tt.to)
+			cgoBuf := encodePushHeader(tt.from, tt.to)
+			if !bytes.Equal(goBuf, cgoBuf) {
+				t.Errorf("encodePushHeader(%v, %v) mismatch:\ngo=%x\ncgo=%x", tt.from, tt.to, goBuf, cgoBuf)
+			}
+
+			// Test Decoding
+			goHead, _ := goDecodePushHeader(cgoBuf)
+			cgoHead, _ := decodePushHeader(cgoBuf)
+			if goHead.From != cgoHead.From || goHead.To != cgoHead.To {
+				t.Errorf("decodePushHeader mismatch for %v:\ngo=%+v\ncgo=%+v", tt, goHead, cgoHead)
+			}
+		}
+	})
+
+	t.Run("OverlayHeader", func(t *testing.T) {
+		tests := []uint64{
+			1,
+			0xFFFFFFFFFFFFFFFF,
+			0,
+			1234567890,
+		}
+		for _, id := range tests {
+			goBuf := goEncodeOverlayHeader(id)
+			cgoBuf := encodeOverlayHeader(id)
+			if !bytes.Equal(goBuf, cgoBuf) {
+				t.Errorf("encodeOverlayHeader(%v) mismatch:\ngo=%x\ncgo=%x", id, goBuf, cgoBuf)
+			}
+
+			// Test Decoding
+			goHead, _ := goDecodeOverlayHeader(cgoBuf)
+			cgoHead, _ := decodeOverlayHeader(cgoBuf)
+			if goHead.id != cgoHead.id {
+				t.Errorf("decodeOverlayHeader mismatch for %v:\ngo=%+v\ncgo=%+v", id, goHead, cgoHead)
+			}
+		}
+	})
+
+	t.Run("ParseNatRsp", func(t *testing.T) {
+		tests := []string{
+			`{"IP":"1.2.3.4","port":1234}`,
+			`{"IP":"192.168.1.1","port":54321}`,
+			`{"IP":"240e:3b3:3000:1::1","port":8080}`,
+		}
+		for _, jsonStr := range tests {
+			buf := []byte(jsonStr)
+			goIP, goPort, _ := goParseNatRsp(buf)
+			cgoIP, cgoPort, err := parseNatRsp(buf)
+			if err != nil {
+				t.Errorf("parseNatRsp failed: %v", err)
+				continue
+			}
+			if goIP != cgoIP || goPort != cgoPort {
+				t.Errorf("parseNatRsp mismatch for %s:\ngo=%s:%d\ncgo=%s:%d", jsonStr, goIP, goPort, cgoIP, cgoPort)
 			}
 		}
 	})
@@ -297,6 +447,144 @@ func TestCGOCompatibility(t *testing.T) {
 			if goSum != cgoSum {
 				t.Errorf("calculateChecksum mismatch for %x: go=%d, cgo=%d", data, goSum, cgoSum)
 			}
+		}
+	})
+
+	t.Run("RetryTime", func(t *testing.T) {
+		for x := 0.0; x < 10.0; x += 0.5 {
+			goRelay := goCalcRetryTimeRelay(x)
+			cgoRelay := calcRetryTimeRelay(x)
+			if math.Abs(goRelay-cgoRelay) > 1e-9 {
+				t.Errorf("calcRetryTimeRelay(%f) mismatch: go=%f, cgo=%f", x, goRelay, cgoRelay)
+			}
+
+			goDirect := goCalcRetryTimeDirect(x)
+			cgoDirect := calcRetryTimeDirect(x)
+			if math.Abs(goDirect-cgoDirect) > 1e-9 {
+				t.Errorf("calcRetryTimeDirect(%f) mismatch: go=%f, cgo=%f", x, goDirect, cgoDirect)
+			}
+		}
+	})
+
+	t.Run("Min", func(t *testing.T) {
+		tests := [][]int32{
+			{1, 2, 3, 4, 5},
+			{5, 4, 3, 2, 1},
+			{-1, -5, 0, 10},
+			{42},
+		}
+		for _, tt := range tests {
+			goRes := goMin(tt...)
+			cgoRes := min(tt...)
+			if goRes != cgoRes {
+				t.Errorf("min(%v) mismatch: go=%d, cgo=%d", tt, goRes, cgoRes)
+			}
+		}
+	})
+
+	t.Run("SanitizeFileName", func(t *testing.T) {
+		names := []string{
+			"test.txt",
+			"test/file.txt",
+			"a\\b:c*d?e\"f<g>h|i",
+			"",
+		}
+		for _, name := range names {
+			goRes := goSanitizeFileName(name)
+			cgoRes := sanitizeFileName(name)
+			if goRes != cgoRes {
+				t.Errorf("sanitizeFileName(%s) mismatch: go=%s, cgo=%s", name, goRes, cgoRes)
+			}
+		}
+	})
+
+	t.Run("AppConfig", func(t *testing.T) {
+		config := &AppConfig{
+			SrcPort:  1234,
+			Protocol: "tcp",
+			PeerNode: "testnode",
+		}
+		// Test ID
+		id := config.ID()
+		expectedID := uint64(1234 * 10)
+		if id != expectedID {
+			t.Errorf("AppConfig.ID mismatch: expected %d, got %d", expectedID, id)
+		}
+
+		config.SrcPort = 0
+		id = config.ID()
+		expectedID = goNodeNameToID("testnode")
+		if id != expectedID {
+			t.Errorf("AppConfig.ID (memapp) mismatch: expected %d, got %d", expectedID, id)
+		}
+
+		// Test LogPeerNode
+		config.relayMode = "public"
+		logName := config.LogPeerNode()
+		expectedLogName := fmt.Sprintf("%d", expectedID)
+		if logName != expectedLogName {
+			t.Errorf("AppConfig.LogPeerNode (public) mismatch: expected %s, got %s", expectedLogName, logName)
+		}
+
+		config.relayMode = "private"
+		logName = config.LogPeerNode()
+		if logName != "testnode" {
+			t.Errorf("AppConfig.LogPeerNode (private) mismatch: expected %s, got %s", "testnode", logName)
+		}
+	})
+
+	t.Run("InetAtoN", func(t *testing.T) {
+		ips := []string{"1.2.3.4", "192.168.1.1", "10.0.0.1/24"}
+		for _, ip := range ips {
+			goRes, _ := goInetAtoN(ip)
+			cRes, _ := inetAtoN(ip)
+			if goRes != cRes {
+				t.Errorf("InetAtoN(%s) mismatch: go=%d, c=%d", ip, goRes, cRes)
+			}
+		}
+	})
+}
+
+func goInetAtoN(ipstr string) (uint32, error) {
+	i, _, err := net.ParseCIDR(ipstr)
+	if err != nil {
+		i = net.ParseIP(ipstr)
+		if i == nil {
+			return 0, err
+		}
+	}
+	ret := big.NewInt(0)
+	ret.SetBytes(i.To4())
+	return uint32(ret.Int64()), nil
+}
+
+func TestRTTAndMovingAverage(t *testing.T) {
+	t.Run("calcRTT", func(t *testing.T) {
+		// Test first time (DefaultRtt = 1000)
+		res := calcRTT(1000, 50)
+		if res != 50 {
+			t.Errorf("calcRTT(1000, 50) expected 50, got %d", res)
+		}
+
+		// Test moving average
+		// (100 * (1 - 1/20) + 200 * (1/20)) = 100 * 19/20 + 200 * 1/20 = 95 + 10 = 105
+		res = calcRTT(100, 200)
+		if res != 105 {
+			t.Errorf("calcRTT(100, 200) expected 105, got %d", res)
+		}
+	})
+
+	t.Run("movingAverage", func(t *testing.T) {
+		// (1000 * (1 - 0.1) + 2000 * 0.1) = 900 + 200 = 1100
+		res := movingAverage(1000, 2000, 0.1)
+		if res != 1100 {
+			t.Errorf("movingAverage(1000, 2000, 0.1) expected 1100, got %d", res)
+		}
+
+		// (1000 * (1 - 0.5) + 2000 * 0.5) = 500 + 1000 = 1500
+		res = movingAverage(1000, 2000, 0.5)
+		if res != 1500 {
+			t.Errorf("movingAverage(1000, 2000, 0.5) expected 1500, got %d", res)
 		}
 	})
 }

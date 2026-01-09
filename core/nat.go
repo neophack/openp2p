@@ -104,27 +104,33 @@ func getNATType(host string, detectPort1 int, detectPort2 int) (publicIP string,
 	// the random local port may be used by other.
 	localPort := int(rand.Uint32()%15000 + 50000)
 
-	ip1, port1, err := natDetectUDP(host, detectPort1, localPort)
-	if err != nil {
-		// udp block try tcp
-		gLog.w("udp block, try tcp nat detect")
-		if ip1, port1, _, err = natDetectTCP(host, detectPort1, localPort); err != nil {
-			return "", 0, err
-		}
+	cHost := C.CString(host)
+	defer C.free(unsafe.Pointer(cHost))
+
+	var cIP [64]C.char
+	var cNATType C.int
+
+	ret := C.get_nat_type_c(cHost, C.int(detectPort1), C.int(detectPort2), C.int(localPort), &cIP[0], &cNATType)
+	if ret != 0 {
+		return "", 0, fmt.Errorf("get_nat_type_c failed with code %d", ret)
 	}
-	_, port2, err := natDetectUDP(host, detectPort2, localPort) // 2rd nat test not need testing publicip
-	if err != nil {
-		gLog.w("udp block, try tcp nat detect")
-		if _, port2, _, err = natDetectTCP(host, detectPort2, localPort); err != nil {
-			return "", 0, err
-		}
+
+	publicIP = C.GoString(&cIP[0])
+	NATType = int(cNATType)
+	return publicIP, NATType, nil
+}
+
+func parseNatRsp(buf []byte) (string, int, error) {
+	if len(buf) == 0 {
+		return "", 0, fmt.Errorf("empty buffer")
 	}
-	gLog.d("local port:%d  nat port:%d", localPort, port2)
-	natType := NATSymmetric
-	if port1 == port2 {
-		natType = NATCone
+	var cIP [64]C.char
+	var cPort C.int
+	ret := C.parse_nat_rsp_c((*C.char)(unsafe.Pointer(&buf[0])), C.int(len(buf)), &cIP[0], &cPort)
+	if ret != 0 {
+		return "", 0, fmt.Errorf("parse_nat_rsp_c failed with code %d", ret)
 	}
-	return ip1, natType, nil
+	return C.GoString(&cIP[0]), int(cPort), nil
 }
 
 func publicIPTest(publicIP string, echoPort int) (hasPublicIP int, hasUPNPorNATPMP int) {

@@ -9,6 +9,7 @@ import "C"
 
 import (
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"net"
 	"time"
@@ -39,7 +40,7 @@ type openP2PHeader struct {
 	SubType  uint16
 }
 
-const openP2PHeaderSize = 8 // binary.Size(openP2PHeader{}) is 8
+const openP2PHeaderSize = C.OPENP2P_HEADER_SIZE
 
 type PushHeader struct {
 	From uint64
@@ -82,84 +83,119 @@ func encodeHeader(mainType uint16, subType uint16, length uint32) []byte {
 	return buf
 }
 
+func encodePushHeader(from uint64, to uint64) []byte {
+	buf := make([]byte, PushHeaderSize)
+	C.encode_push_header_c(C.uint64_t(from), C.uint64_t(to), (*C.uint8_t)(unsafe.Pointer(&buf[0])))
+	return buf
+}
+
+func decodePushHeader(data []byte) (*PushHeader, error) {
+	if len(data) < PushHeaderSize {
+		return nil, fmt.Errorf("data too short")
+	}
+	var cHead C.push_header_t
+	C.decode_push_header_c((*C.uint8_t)(unsafe.Pointer(&data[0])), &cHead)
+	return &PushHeader{
+		From: uint64(cHead.from),
+		To:   uint64(cHead.to),
+	}, nil
+}
+
+func encodeOverlayHeader(id uint64) []byte {
+	buf := make([]byte, overlayHeaderSize)
+	C.encode_overlay_header_c(C.uint64_t(id), (*C.uint8_t)(unsafe.Pointer(&buf[0])))
+	return buf
+}
+
+func decodeOverlayHeader(data []byte) (*overlayHeader, error) {
+	if len(data) < overlayHeaderSize {
+		return nil, fmt.Errorf("data too short")
+	}
+	var cHead C.overlay_header_t
+	C.decode_overlay_header_c((*C.uint8_t)(unsafe.Pointer(&data[0])), &cHead)
+	return &overlayHeader{
+		id: uint64(cHead.id),
+	}, nil
+}
+
 // Message main type
 const (
-	MsgLogin     = 0
-	MsgHeartbeat = 1
-	MsgNATDetect = 2
-	MsgPush      = 3
-	MsgP2P       = 4
-	MsgRelay     = 5
-	MsgReport    = 6
-	MsgQuery     = 7
-	MsgSDWAN     = 8
+	MsgLogin     = C.MSG_LOGIN
+	MsgHeartbeat = C.MSG_HEARTBEAT
+	MsgNATDetect = C.MSG_NAT_DETECT
+	MsgPush      = C.MSG_PUSH
+	MsgP2P       = C.MSG_P2P
+	MsgRelay     = C.MSG_RELAY
+	MsgReport    = C.MSG_REPORT
+	MsgQuery     = C.MSG_QUERY
+	MsgSDWAN     = C.MSG_SDWAN
 )
 
 // TODO: seperate node push and web push.
 const (
-	MsgPushRsp                  = 0
-	MsgPushConnectReq           = 1
-	MsgPushConnectRsp           = 2
-	MsgPushHandshakeStart       = 3
-	MsgPushAddRelayTunnelReq    = 4
-	MsgPushAddRelayTunnelRsp    = 5
-	MsgPushUpdate               = 6
-	MsgPushReportApps           = 7
-	MsgPushUnderlayConnect      = 8
-	MsgPushEditApp              = 9
-	MsgPushSwitchApp            = 10
-	MsgPushRestart              = 11
-	MsgPushEditNode             = 12
-	MsgPushAPPKey               = 13
-	MsgPushReportLog            = 14
-	MsgPushDstNodeOnline        = 15
-	MsgPushReportGoroutine      = 16
-	MsgPushReportMemApps        = 17
-	MsgPushServerSideSaveMemApp = 18
-	MsgPushCheckRemoteService   = 19
-	MsgPushSpecTunnel           = 20
-	MsgPushReportHeap           = 21
-	MsgPushSDWanRefresh         = 22
-	MsgPushNat4Detect           = 23
+	MsgPushRsp                  = C.MSG_PUSH_RSP
+	MsgPushConnectReq           = C.MSG_PUSH_CONNECT_REQ
+	MsgPushConnectRsp           = C.MSG_PUSH_CONNECT_RSP
+	MsgPushHandshakeStart       = C.MSG_PUSH_HANDSHAKE_START
+	MsgPushAddRelayTunnelReq    = C.MSG_PUSH_ADD_RELAY_TUNNEL_REQ
+	MsgPushAddRelayTunnelRsp    = C.MSG_PUSH_ADD_RELAY_TUNNEL_RSP
+	MsgPushUpdate               = C.MSG_PUSH_UPDATE
+	MsgPushReportApps           = C.MSG_PUSH_REPORT_APPS
+	MsgPushUnderlayConnect      = C.MSG_PUSH_UNDERLAY_CONNECT
+	MsgPushEditApp              = C.MSG_PUSH_EDIT_APP
+	MsgPushSwitchApp            = C.MSG_PUSH_SWITCH_APP
+	MsgPushRestart              = C.MSG_PUSH_RESTART
+	MsgPushEditNode             = C.MSG_PUSH_EDIT_NODE
+	MsgPushAPPKey               = C.MSG_PUSH_APP_KEY
+	MsgPushReportLog            = C.MSG_PUSH_REPORT_LOG
+	MsgPushDstNodeOnline        = C.MSG_PUSH_DST_NODE_ONLINE
+	MsgPushReportGoroutine      = C.MSG_PUSH_REPORT_GOROUTINE
+	MsgPushReportMemApps        = C.MSG_PUSH_REPORT_MEM_APPS
+	MsgPushServerSideSaveMemApp = C.MSG_PUSH_SERVER_SIDE_SAVE_MEM_APP
+	MsgPushCheckRemoteService   = C.MSG_PUSH_CHECK_REMOTE_SERVICE
+	MsgPushSpecTunnel           = C.MSG_PUSH_SPEC_TUNNEL
+	MsgPushReportHeap           = C.MSG_PUSH_REPORT_HEAP
+	MsgPushSDWanRefresh         = C.MSG_PUSH_SDWAN_REFRESH
+	MsgPushNat4Detect           = C.MSG_PUSH_NAT4_DETECT
 )
 
 // MsgP2P sub type message
 const (
-	MsgPunchHandshake = iota
-	MsgPunchHandshakeAck
-	MsgTunnelHandshake
-	MsgTunnelHandshakeAck
-	MsgTunnelHeartbeat
-	MsgTunnelHeartbeatAck
-	MsgOverlayConnectReq
-	MsgOverlayConnectRsp
-	MsgOverlayDisconnectReq
-	MsgOverlayData
-	MsgRelayData
-	MsgRelayHeartbeat
-	MsgRelayHeartbeatAck
-	MsgNodeData
-	MsgRelayNodeData
-	MsgNodeDataMP
-	MsgNodeDataMPAck
-	MsgRelayHeartbeatAck2
+	MsgPunchHandshake        = C.MSG_PUNCH_HANDSHAKE
+	MsgPunchHandshakeAck     = C.MSG_PUNCH_HANDSHAKE_ACK
+	MsgTunnelHandshake       = C.MSG_TUNNEL_HANDSHAKE
+	MsgTunnelHandshakeAck    = C.MSG_TUNNEL_HANDSHAKE_ACK
+	MsgTunnelHeartbeat       = C.MSG_TUNNEL_HEARTBEAT
+	MsgTunnelHeartbeatAck    = C.MSG_TUNNEL_HEARTBEAT_ACK
+	MsgOverlayConnectReq     = C.MSG_OVERLAY_CONNECT_REQ
+	MsgOverlayConnectRsp     = C.MSG_OVERLAY_CONNECT_RSP
+	MsgOverlayDisconnectReq  = C.MSG_OVERLAY_DISCONNECT_REQ
+	MsgOverlayData           = C.MSG_OVERLAY_DATA
+	MsgRelayData             = C.MSG_RELAY_DATA
+	MsgRelayHeartbeat        = C.MSG_RELAY_HEARTBEAT
+	MsgRelayHeartbeatAck     = C.MSG_RELAY_HEARTBEAT_ACK
+	MsgNodeData              = C.MSG_NODE_DATA
+	MsgRelayNodeData         = C.MSG_RELAY_NODE_DATA
+	MsgNodeDataMP            = C.MSG_NODE_DATA_MP
+	MsgNodeDataMPAck         = C.MSG_NODE_DATA_MP_ACK
+	MsgRelayHeartbeatAck2    = C.MSG_RELAY_HEARTBEAT_ACK2
 )
 
 // MsgRelay sub type message
 const (
-	MsgRelayNodeReq = iota
-	MsgRelayNodeRsp
+	MsgRelayNodeReq = C.MSG_RELAY_NODE_REQ
+	MsgRelayNodeRsp = C.MSG_RELAY_NODE_RSP
 )
 
 // MsgReport sub type message
 const (
-	MsgReportBasic = iota
-	MsgReportQuery
-	MsgReportConnect
-	MsgReportApps
-	MsgReportLog
-	MsgReportMemApps
-	MsgReportResponse
+	MsgReportBasic    = C.MSG_REPORT_BASIC
+	MsgReportQuery    = C.MSG_REPORT_QUERY
+	MsgReportConnect  = C.MSG_REPORT_CONNECT
+	MsgReportApps     = C.MSG_REPORT_APPS
+	MsgReportLog      = C.MSG_REPORT_LOG
+	MsgReportMemApps  = C.MSG_REPORT_MEM_APPS
+	MsgReportResponse = C.MSG_REPORT_RESPONSE
 )
 
 const (
@@ -190,12 +226,12 @@ const (
 	MaxDirectTry               = 3
 )
 
-// NATNone has public ip
+// NAT type
 const (
-	NATNone      = 0
-	NATCone      = 1
-	NATSymmetric = 2
-	NATUnknown   = 314
+	NATNone      = C.NAT_NONE
+	NATCone      = C.NAT_CONE
+	NATSymmetric = C.NAT_SYMMETRIC
+	NATUnknown   = C.NAT_UNKNOWN
 )
 
 // underlay protocol
@@ -219,19 +255,19 @@ const (
 )
 
 const (
-	MsgQueryPeerInfoReq = iota
-	MsgQueryPeerInfoRsp
+	MsgQueryPeerInfoReq = C.MSG_QUERY_PEER_INFO_REQ
+	MsgQueryPeerInfoRsp = C.MSG_QUERY_PEER_INFO_RSP
 )
 
 const (
-	MsgSDWANInfoReq = iota
-	MsgSDWANInfoRsp
+	MsgSDWANInfoReq = C.MSG_SDWAN_INFO_REQ
+	MsgSDWANInfoRsp = C.MSG_SDWAN_INFO_RSP
 )
 
 // MsgNATDetect
 const (
-	MsgNAT = iota
-	MsgPublicIP
+	MsgNAT      = C.MSG_NAT
+	MsgPublicIP = C.MSG_PUBLIC_IP
 )
 
 func newMessage(mainType uint16, subType uint16, packet interface{}) ([]byte, error) {

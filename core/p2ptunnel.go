@@ -630,7 +630,10 @@ func (t *P2PTunnel) readLoop() {
 				existApp, appok := GNetwork.apps.Load(memAppPeerID)
 				if appok {
 					app := existApp.(*p2pApp)
-					app.rtt[0].Store(int32(time.Since(t.whbTime) / time.Millisecond))
+					rtt := int32(time.Since(t.whbTime) / time.Millisecond)
+					preRtt := app.rtt[0].Load()
+					rtt = calcRTT(preRtt, rtt)
+					app.rtt[0].Store(rtt)
 				}
 			}
 

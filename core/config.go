@@ -1,5 +1,11 @@
 package openp2p
 
+/*
+#include <stdlib.h>
+#include "common_c.h"
+*/
+import "C"
+
 import (
 	"encoding/json"
 	"flag"
@@ -9,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 )
 
 var gConf Config
@@ -58,20 +65,21 @@ const (
 )
 
 func (c *AppConfig) ID() uint64 {
-	if c.SrcPort == 0 { // memapp
-		return NodeNameToID(c.PeerNode)
-	}
-	if c.Protocol == "tcp" {
-		return uint64(c.SrcPort) * 10
-	}
-	return uint64(c.SrcPort)*10 + 1
+	cProtocol := C.CString(c.Protocol)
+	defer C.free(unsafe.Pointer(cProtocol))
+	cPeerNode := C.CString(c.PeerNode)
+	defer C.free(unsafe.Pointer(cPeerNode))
+	return uint64(C.app_config_id_c(C.int(c.SrcPort), cProtocol, cPeerNode))
 }
 
 func (c *AppConfig) LogPeerNode() string {
-	if c.relayMode == "public" { // memapp
-		return fmt.Sprintf("%d", NodeNameToID(c.PeerNode))
-	}
-	return c.PeerNode
+	cRelayMode := C.CString(c.relayMode)
+	defer C.free(unsafe.Pointer(cRelayMode))
+	cPeerNode := C.CString(c.PeerNode)
+	defer C.free(unsafe.Pointer(cPeerNode))
+	buf := make([]byte, 64)
+	C.app_config_log_peer_node_c((*C.char)(unsafe.Pointer(&buf[0])), cRelayMode, cPeerNode)
+	return C.GoString((*C.char)(unsafe.Pointer(&buf[0])))
 }
 
 type Config struct {
