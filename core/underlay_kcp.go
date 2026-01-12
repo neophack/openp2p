@@ -16,6 +16,7 @@ static inline ikcpcb* kcp_create_with_callback(uint32_t conv, void *user) {
 import "C"
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -111,6 +112,7 @@ func (conn *underlayKCP) Read(p []byte) (n int, err error) {
 		conn.kcpMtx.Unlock()
 
 		if n > 0 {
+			gLog.d("kcp recv %d bytes", n)
 			return n, nil
 		}
 		if n == -1 { // EAGAIN
@@ -119,9 +121,12 @@ func (conn *underlayKCP) Read(p []byte) (n int, err error) {
 			return 0, fmt.Errorf("ikcp_recv error: %d", n)
 		}
 
-		timeout := time.Until(conn.readDeadline)
-		if !conn.readDeadline.IsZero() && timeout <= 0 {
-			return 0, errors.New("read timeout")
+		timeout := time.Duration(1 << 62)
+		if !conn.readDeadline.IsZero() {
+			timeout = time.Until(conn.readDeadline)
+			if timeout <= 0 {
+				return 0, errors.New("read timeout")
+			}
 		}
 
 		select {
@@ -130,14 +135,13 @@ func (conn *underlayKCP) Read(p []byte) (n int, err error) {
 		case <-conn.readBuf:
 			// data might be available now
 		case <-time.After(timeout):
-			if !conn.readDeadline.IsZero() {
-				return 0, errors.New("read timeout")
-			}
+			return 0, errors.New("read timeout")
 		}
 	}
 }
 
 func (conn *underlayKCP) Write(p []byte) (n int, err error) {
+	gLog.d("kcp write %d bytes", len(p))
 	conn.kcpMtx.Lock()
 	defer conn.kcpMtx.Unlock()
 	if conn.kcp == nil {
@@ -147,7 +151,7 @@ func (conn *underlayKCP) Write(p []byte) (n int, err error) {
 	if res < 0 {
 		return 0, fmt.Errorf("ikcp_send error: %d", res)
 	}
-	C.ikcp_flush(conn.kcp)
+	C.ikcp_update(conn.kcp, C.IUINT32(time.Now().UnixNano()/1e6))
 	return len(p), nil
 }
 
@@ -162,6 +166,11 @@ func (conn *underlayKCP) updateLoop() {
 			conn.kcpMtx.Lock()
 			if conn.kcp != nil {
 				C.ikcp_update(conn.kcp, C.IUINT32(time.Now().UnixNano()/1e6))
+				// notify Read if data might be ready
+				select {
+				case conn.readBuf <- nil:
+				default:
+				}
 			}
 			conn.kcpMtx.Unlock()
 		}
@@ -186,9 +195,14 @@ func (conn *underlayKCP) readLoop() {
 			if conn.remote == nil {
 				conn.remote = addr
 			}
+			gLog.d("kcp input %d bytes from %s", n, addr.String())
 			conn.kcpMtx.Lock()
 			if conn.kcp != nil {
-				C.ikcp_input(conn.kcp, (*C.char)(unsafe.Pointer(&buf[0])), C.long(n))
+				res := C.ikcp_input(conn.kcp, (*C.char)(unsafe.Pointer(&buf[0])), C.long(n))
+				if res < 0 {
+					gLog.d("kcp input error: %d, conv in pkt: %d, expected: %d", res, binary.LittleEndian.Uint32(buf[:4]), uint32(conn.kcp.conv))
+				}
+				C.ikcp_update(conn.kcp, C.IUINT32(time.Now().UnixNano()/1e6))
 			}
 			conn.kcpMtx.Unlock()
 			// notify Read
@@ -219,6 +233,7 @@ func go_kcp_output(buf *C.char, len C.int, kcp *C.ikcpcb, user unsafe.Pointer) C
 	if conn.remote == nil {
 		return -1
 	}
+	gLog.d("kcp output %d bytes to %s", len, conn.remote.String())
 	_, err := conn.conn.WriteToUDP(data, conn.remote)
 	if err != nil {
 		return -1
@@ -226,8 +241,8 @@ func go_kcp_output(buf *C.char, len C.int, kcp *C.ikcpcb, user unsafe.Pointer) C
 	return 0
 }
 
-func listenKCP(addr string, idleTimeout time.Duration) (*underlayKCP, error) {
-	gLog.d("kcp listen on %s", addr)
+func listenKCP(addr string, conv uint32, idleTimeout time.Duration) (*underlayKCP, error) {
+	gLog.d("kcp listen on %s conv=%d", addr, conv)
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
 		return nil, err
@@ -244,7 +259,9 @@ func listenKCP(addr string, idleTimeout time.Duration) (*underlayKCP, error) {
 		readBuf:  make(chan []byte, 1),
 	}
 	ul.handle = cgo.NewHandle(ul)
-	ul.kcp = C.kcp_create_with_callback(0, unsafe.Pointer(&ul.handle))
+	ul.kcp = C.kcp_create_with_callback(C.uint32_t(conv), unsafe.Pointer(&ul.handle))
+	gLog.d("kcp created conv=%d", uint32(ul.kcp.conv))
+	ul.kcp.stream = 1
 	C.ikcp_nodelay(ul.kcp, 1, 10, 2, 1)
 	C.ikcp_wndsize(ul.kcp, 512, 512)
 	C.ikcp_setmtu(ul.kcp, 1350)
@@ -255,7 +272,7 @@ func listenKCP(addr string, idleTimeout time.Duration) (*underlayKCP, error) {
 	return ul, nil
 }
 
-func dialKCP(conn *net.UDPConn, remoteAddr *net.UDPAddr, idleTimeout time.Duration) (*underlayKCP, error) {
+func dialKCP(conn *net.UDPConn, remoteAddr *net.UDPAddr, conv uint32, idleTimeout time.Duration) (*underlayKCP, error) {
 	ul := &underlayKCP{
 		conn:     conn,
 		remote:   remoteAddr,
@@ -265,7 +282,9 @@ func dialKCP(conn *net.UDPConn, remoteAddr *net.UDPAddr, idleTimeout time.Durati
 		readBuf:  make(chan []byte, 1),
 	}
 	ul.handle = cgo.NewHandle(ul)
-	ul.kcp = C.kcp_create_with_callback(0, unsafe.Pointer(&ul.handle))
+	ul.kcp = C.kcp_create_with_callback(C.uint32_t(conv), unsafe.Pointer(&ul.handle))
+	gLog.d("kcp created dial conv=%d", uint32(ul.kcp.conv))
+	ul.kcp.stream = 1
 	C.ikcp_nodelay(ul.kcp, 1, 10, 2, 1)
 	C.ikcp_wndsize(ul.kcp, 512, 512)
 	C.ikcp_setmtu(ul.kcp, 1350)

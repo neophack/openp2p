@@ -599,19 +599,19 @@ func TestCGOCompatibility(t *testing.T) {
 
 	t.Run("KCP", func(t *testing.T) {
 		// Create server
-		server, err := listenKCP("127.0.0.1:0", time.Second*10)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer server.Close()
-		serverAddr := server.conn.LocalAddr().(*net.UDPAddr)
+			server, err := listenKCP("127.0.0.1:0", 1234, time.Second*10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer server.Close()
+			serverAddr := server.conn.LocalAddr().(*net.UDPAddr)
 
-		// Create client
-		clientConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
-		if err != nil {
-			t.Fatal(err)
-		}
-		client, err := dialKCP(clientConn, serverAddr, time.Second*10)
+			// Create client
+			clientConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+			if err != nil {
+				t.Fatal(err)
+			}
+			client, err := dialKCP(clientConn, serverAddr, 1234, time.Second*10)
 		if err != nil {
 			t.Fatal(err)
 		}

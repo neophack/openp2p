@@ -551,7 +551,11 @@ func (pn *P2PNetwork) addDirectTunnel(config AppConfig, tid uint64) (t *P2PTunne
 	// try IPv4
 	if !thisTunnelForcev6 && !strings.Contains(gConf.Network.Node, "openp2pS2STest") && (config.hasIPv4 == 1 || gConf.Network.hasIPv4 == 1 || config.hasUPNPorNATPMP == 1 || gConf.Network.hasUPNPorNATPMP == 1) {
 		if config.PunchPriority&PunchPriorityUDPOnly != 0 && compareVersion(config.peerVersion, SupportUDP4DirectVersion) >= 0 {
-			gLog.i("try UDP4")
+			underlayProtocol := config.UnderlayProtocol
+			if underlayProtocol == "" {
+				underlayProtocol = "kcp"
+			}
+			gLog.i("try UDP4 using %s", underlayProtocol)
 			config.linkMode = LinkModeUDP4
 		} else {
 			gLog.i("try TCP4")
@@ -577,7 +581,11 @@ func (pn *P2PNetwork) addDirectTunnel(config AppConfig, tid uint64) (t *P2PTunne
 		// try UDPPunch
 		for i := 0; i < Cone2ConeUDPPunchMaxRetry; i++ { // when both 2 nats has restrict firewall, simultaneous punching needs to be very precise, it takes a few tries
 			if config.peerNatType == NATCone || gConf.Network.natType == NATCone {
-				gLog.i("try UDP4 Punch")
+				underlayProtocol := config.UnderlayProtocol
+				if underlayProtocol == "" {
+					underlayProtocol = "kcp"
+				}
+				gLog.i("try UDP4 Punch using %s", underlayProtocol)
 				config.linkMode = LinkModeUDPPunch
 				config.isUnderlayServer = 0
 				if t, err = pn.newTunnel(config, tid, isClient); err == nil {

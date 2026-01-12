@@ -292,8 +292,8 @@ func (t *P2PTunnel) connectUnderlayUDP() (c underlay, err error) {
 			}
 			gLog.d("UDP4 connection ok")
 		} else {
-			if t.config.UnderlayProtocol == "kcp" {
-				ul, err = listenKCP(t.localHoleAddr.String(), TunnelIdleTimeout)
+			if underlayProtocol == "kcp" {
+				ul, err = listenKCP(t.localHoleAddr.String(), uint32(t.id), TunnelIdleTimeout)
 			} else {
 				ul, err = listenQuic(t.localHoleAddr.String(), TunnelIdleTimeout)
 			}
@@ -304,11 +304,13 @@ func (t *P2PTunnel) connectUnderlayUDP() (c underlay, err error) {
 			return nil, err
 		}
 
+		ul.SetReadDeadline(time.Now().Add(UnderlayConnectTimeout))
 		_, buff, err := ul.ReadBuffer()
 		if err != nil {
 			ul.Close()
 			return nil, fmt.Errorf("read start msg error:%s", err)
 		}
+		ul.SetReadDeadline(time.Time{}) // clear deadline
 		if buff != nil {
 			gLog.d("handshake flag:%s", string(buff))
 		}
@@ -335,9 +337,9 @@ func (t *P2PTunnel) connectUnderlayUDP() (c underlay, err error) {
 		}
 	}
 	GNetwork.read(t.config.PeerNode, MsgPush, MsgPushUnderlayConnect, ReadMsgTimeout)
-	gLog.d("%s dial to %s", underlayProtocol, t.remoteHoleAddr.String())
-	if t.config.UnderlayProtocol == "kcp" {
-		ul, errL = dialKCP(conn, t.remoteHoleAddr, UnderlayConnectTimeout)
+	gLog.i("%s dial to %s", underlayProtocol, t.remoteHoleAddr.String())
+	if underlayProtocol == "kcp" {
+		ul, errL = dialKCP(conn, t.remoteHoleAddr, uint32(t.id), UnderlayConnectTimeout)
 	} else {
 		ul, errL = dialQuic(conn, t.remoteHoleAddr, UnderlayConnectTimeout)
 	}
@@ -348,12 +350,14 @@ func (t *P2PTunnel) connectUnderlayUDP() (c underlay, err error) {
 	handshakeBegin := time.Now()
 	tidBuff := new(bytes.Buffer)
 	binary.Write(tidBuff, binary.LittleEndian, t.id)
+	ul.SetReadDeadline(time.Now().Add(UnderlayConnectTimeout))
 	ul.WriteBytes(MsgP2P, MsgTunnelHandshake, tidBuff.Bytes())
-	_, buff, err := ul.ReadBuffer() // TODO: kcp need timeout
+	_, buff, err := ul.ReadBuffer()
 	if err != nil {
 		ul.Close()
 		return nil, fmt.Errorf("read MsgTunnelHandshake error:%s", err)
 	}
+	ul.SetReadDeadline(time.Time{}) // clear deadline
 	if buff != nil {
 		gLog.d("handshake flag:%s", string(buff))
 	}
